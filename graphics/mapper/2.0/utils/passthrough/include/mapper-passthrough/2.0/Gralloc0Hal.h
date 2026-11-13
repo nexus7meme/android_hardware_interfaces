@@ -20,6 +20,7 @@
 #endif
 
 #include <inttypes.h>
+#include <unistd.h>
 
 #include <hardware/gralloc.h>
 #include <log/log.h>
@@ -80,24 +81,48 @@ class Gralloc0HalImpl : public Hal {
             return Error::NO_RESOURCES;
         }
 
-        if (mModule->registerBuffer(mModule, bufferHandle)) {
+        // The legacy Tegra handle carries per-process NvMap references. A
+        // cloned handle owned by this PID is still a distinct object: force
+        // registerBuffer's import path to acquire its own reference before
+        // the local allocator releases the original. Match the pinned ABI.
+        if (bufferHandle->numFds == 1 && bufferHandle->numInts == 43 &&
+            static_cast<uint32_t>(bufferHandle->data[1]) == 0xdaffcaffu &&
+            bufferHandle->data[2] == getpid()) {
+            bufferHandle->data[2] = 0;
+        }
+        int result = mModule->registerBuffer(mModule, bufferHandle);
+        if (result) {
+            ALOGE("Legacy gralloc registerBuffer failed: %d (fds=%d ints=%d)",
+                  result, rawHandle->numFds, rawHandle->numInts);
             native_handle_close(bufferHandle);
             native_handle_delete(bufferHandle);
             return Error::BAD_BUFFER;
         }
 
+        // This pinned Tegra ABI leaves imported handles with Owner == 0.
+        // Mark this independently imported clone as locally owned so its
+        // final NvGrUnregisterBuffer closes the fd and frees the handle.
+        // NvOsFree in the shipped libnvos is a direct libc free wrapper.
+        // HWC/GLES may retain lock references beyond mapper freeBuffer.
+        if (isTegraHandle(bufferHandle)) bufferHandle->data[2] = getpid();
         *outBufferHandle = bufferHandle;
 
         return Error::NONE;
     }
 
     Error freeBuffer(native_handle_t* bufferHandle) override {
+        const bool tegraOwnsHandle = isTegraHandle(bufferHandle);
         if (mModule->unregisterBuffer(mModule, bufferHandle)) {
             return Error::BAD_BUFFER;
         }
 
-        native_handle_close(bufferHandle);
-        native_handle_delete(bufferHandle);
+        // Tegra releases this allocation on its final reference, possibly
+        // in a later GPU/HWC unlock. Do not delete a still-referenced handle
+        // or close/free it again after unregisterBuffer already did so.
+        if (!tegraOwnsHandle) {
+            native_handle_close(bufferHandle);
+            native_handle_delete(bufferHandle);
+        }
         return Error::NONE;
     }
 
@@ -175,6 +200,11 @@ class Gralloc0HalImpl : public Hal {
     }
 
    protected:
+    static bool isTegraHandle(const native_handle_t* handle) {
+        return handle->numFds == 1 && handle->numInts == 43 &&
+               static_cast<uint32_t>(handle->data[1]) == 0xdaffcaffu;
+    }
+
     virtual uint64_t getValidBufferUsageMask() const {
         return BufferUsage::CPU_READ_MASK | BufferUsage::CPU_WRITE_MASK | BufferUsage::GPU_TEXTURE |
                BufferUsage::GPU_RENDER_TARGET | BufferUsage::COMPOSER_OVERLAY |

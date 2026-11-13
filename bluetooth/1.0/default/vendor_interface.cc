@@ -208,8 +208,13 @@ bool VendorInterface::Open(InitializeCompleteCallback initialize_complete_cb,
 
   // Get the local BD address
 
-  uint8_t local_bda[BluetoothAddress::kBytes];
-  if (!BluetoothAddress::get_local_address(local_bda)) {
+  uint8_t local_bda[BluetoothAddress::kBytes] = {};
+  if (property_get_bool("ro.bt.bdaddr_from_controller", false)) {
+    // Some legacy controllers (BCM4330) retain their factory address in OTP.
+    // The device vendor library must be configured to read it during firmware
+    // initialization. Zero here is a vendor-init sentinel, not a device address.
+    ALOGI("%s: Deferring factory address to controller OTP", __func__);
+  } else if (!BluetoothAddress::get_local_address(local_bda)) {
     LOG_ALWAYS_FATAL("%s: No Bluetooth Address!", __func__);
   }
   int status = lib_interface_->init(&lib_callbacks, (unsigned char*)local_bda);

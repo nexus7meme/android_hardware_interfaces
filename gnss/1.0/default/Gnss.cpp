@@ -260,8 +260,14 @@ void Gnss::nmeaCb(GpsUtcTime timestamp, const char* nmea, int length) {
         return;
     }
 
-    android::hardware::hidl_string nmeaString;
-    nmeaString.setToExternal(nmea, length);
+    if (nmea == nullptr || length < 0) {
+        ALOGE("%s: Invalid NMEA buffer", __func__);
+        return;
+    }
+
+    // gps_nmea_callback supplies a byte count, not a NUL-terminated string.
+    // HIDL requires an extra terminator, so own a copy of the counted bytes.
+    android::hardware::hidl_string nmeaString(std::string(nmea, length));
     auto ret = sGnssCbIface->gnssNmeaCb(timestamp, nmeaString);
     if (!ret.isOk()) {
         ALOGE("%s: Unable to invoke callback", __func__);

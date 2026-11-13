@@ -95,7 +95,7 @@ Sensors::Sensors()
 
     // Require all the old HAL APIs to be present except for injection, which
     // is considered optional.
-    CHECK_GE(getHalDeviceVersion(), SENSORS_DEVICE_API_VERSION_1_3);
+    CHECK_GE(getHalDeviceVersion(), SENSORS_DEVICE_API_VERSION_1_0);
 
     if (getHalDeviceVersion() == SENSORS_DEVICE_API_VERSION_1_4) {
         if (mSensorDevice->inject_sensor_data == nullptr) {
@@ -124,7 +124,28 @@ Return<void> Sensors::getSensorsList(getSensorsList_cb _hidl_cb) {
         const sensor_t *src = &list[i];
         SensorInfo *dst = &out[i];
 
-        convertFromSensor(*src, dst);
+        if (getHalDeviceVersion() == SENSORS_DEVICE_API_VERSION_1_0) {
+            // HAL 1.0 leaves the later sensor_t fields reserved. Never read
+            // those slots as strings or FIFO capabilities.
+            sensor_t legacy = {};
+            legacy.name = src->name;
+            legacy.vendor = src->vendor;
+            legacy.version = src->version;
+            legacy.handle = src->handle;
+            legacy.type = src->type;
+            legacy.maxRange = src->maxRange;
+            legacy.resolution = src->resolution;
+            legacy.power = src->power;
+            legacy.minDelay = src->minDelay;
+            legacy.stringType = "";
+            legacy.requiredPermission = "";
+            legacy.flags = src->minDelay > 0 ? SENSOR_FLAG_CONTINUOUS_MODE :
+                    (src->minDelay == 0 ? SENSOR_FLAG_ON_CHANGE_MODE : SENSOR_FLAG_ONE_SHOT_MODE);
+            if (src->type == SENSOR_TYPE_PROXIMITY) legacy.flags |= SENSOR_FLAG_WAKE_UP;
+            convertFromSensor(legacy, dst);
+        } else {
+            convertFromSensor(*src, dst);
+        }
     }
 
     _hidl_cb(out);
@@ -235,6 +256,12 @@ Return<Result> Sensors::batch(
         int32_t sensor_handle,
         int64_t sampling_period_ns,
         int64_t max_report_latency_ns) {
+    if (getHalDeviceVersion() == SENSORS_DEVICE_API_VERSION_1_0) {
+        if (max_report_latency_ns != 0) return Result::BAD_VALUE;
+        return ResultFromStatus(mSensorDevice->setDelay(
+                reinterpret_cast<sensors_poll_device_t *>(mSensorDevice),
+                sensor_handle, sampling_period_ns));
+    }
     return ResultFromStatus(
             mSensorDevice->batch(
                 mSensorDevice,
@@ -245,6 +272,10 @@ Return<Result> Sensors::batch(
 }
 
 Return<Result> Sensors::flush(int32_t sensor_handle) {
+    // A non-batching HAL cannot flush; the framework handles this result.
+    if (getHalDeviceVersion() == SENSORS_DEVICE_API_VERSION_1_0) {
+        return Result::INVALID_OPERATION;
+    }
     return ResultFromStatus(mSensorDevice->flush(mSensorDevice, sensor_handle));
 }
 
@@ -263,7 +294,8 @@ Return<Result> Sensors::injectSensorData(const Event& event) {
 
 Return<void> Sensors::registerDirectChannel(
         const SharedMemInfo& mem, registerDirectChannel_cb _hidl_cb) {
-    if (mSensorDevice->register_direct_channel == nullptr
+    if (getHalDeviceVersion() < SENSORS_DEVICE_API_VERSION_1_4
+            || mSensorDevice->register_direct_channel == nullptr
             || mSensorDevice->config_direct_report == nullptr) {
         // HAL does not support
         _hidl_cb(Result::INVALID_OPERATION, -1);
@@ -288,7 +320,8 @@ Return<void> Sensors::registerDirectChannel(
 }
 
 Return<Result> Sensors::unregisterDirectChannel(int32_t channelHandle) {
-    if (mSensorDevice->register_direct_channel == nullptr
+    if (getHalDeviceVersion() < SENSORS_DEVICE_API_VERSION_1_4
+            || mSensorDevice->register_direct_channel == nullptr
             || mSensorDevice->config_direct_report == nullptr) {
         // HAL does not support
         return Result::INVALID_OPERATION;
@@ -302,7 +335,8 @@ Return<Result> Sensors::unregisterDirectChannel(int32_t channelHandle) {
 Return<void> Sensors::configDirectReport(
         int32_t sensorHandle, int32_t channelHandle, RateLevel rate,
         configDirectReport_cb _hidl_cb) {
-    if (mSensorDevice->register_direct_channel == nullptr
+    if (getHalDeviceVersion() < SENSORS_DEVICE_API_VERSION_1_4
+            || mSensorDevice->register_direct_channel == nullptr
             || mSensorDevice->config_direct_report == nullptr) {
         // HAL does not support
         _hidl_cb(Result::INVALID_OPERATION, -1);

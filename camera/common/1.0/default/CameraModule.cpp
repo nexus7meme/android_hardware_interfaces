@@ -424,11 +424,13 @@ int CameraModule::setCallbacks(const camera_module_callbacks_t *callbacks) {
 }
 
 bool CameraModule::isVendorTagDefined() const {
-    return mModule->get_vendor_tag_ops != NULL;
+    return getModuleApiVersion() >= CAMERA_MODULE_API_VERSION_2_2 &&
+            mModule->get_vendor_tag_ops != NULL;
 }
 
 void CameraModule::getVendorTagOps(vendor_tag_ops_t* ops) {
-    if (mModule->get_vendor_tag_ops) {
+    // HAL1 modules do not contain the vendor-tag callback added in module 2.2.
+    if (isVendorTagDefined()) {
         ATRACE_BEGIN("camera_module->get_vendor_tag_ops");
         mModule->get_vendor_tag_ops(ops);
         ATRACE_END();
